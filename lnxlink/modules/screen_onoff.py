@@ -1,7 +1,9 @@
 """Turns on or off the screen"""
+
 import logging
 import os
 import re
+import subprocess
 from shutil import which
 
 from jeepney import DBusAddress, new_method_call
@@ -36,8 +38,17 @@ class Addon:
             )
             self.control_screen = self._control_wayland_gnome
             self.get_screen_status = self._get_wayland_gnome_status
+        elif  ["unknown", "wayland"] in session_type and "hyprland" in desktop_env:
+            self.control_screen = self._control_wayland_hyprland
+            self.get_screen_status = self._get_wayland_hyprland
         else:
             raise SystemError(f"Session type '{session_type}' not supported")
+
+    def _run_command(self, argv: list[str]) -> str:
+        try:
+            return subprocess.run(argv, capture_output=True, text=True).stdout
+        except (OSError, subprocess.SubprocessError) as err:
+            logger.error("command failed: %s (%s)", " ".join(argv), err)
 
     def exposed_controls(self):
         """Exposes to home assistant"""
@@ -71,9 +82,7 @@ class Addon:
         return status
 
     def _control_x11(self, command):
-        maybe_display = (
-            f"-display {self.display_variable}" if self.display_variable else ""
-        )
+        maybe_display = f"-display {self.display_variable}" if self.display_variable else ""
         syscommand(f"xset {maybe_display} dpms force {command}")
 
     def _get_wayland_gnome_status(self):
@@ -96,3 +105,25 @@ class Addon:
             self.bus.send_message(msg)
         except Exception as err:
             logger.error("Error controlling Wayland screen: %s", err)
+
+    def _control_wayland_hyprland(self, command):
+        active_state = command == "on"
+        if active_state:
+            new_state = 'hl.dsp.dpms({ action = "on" })'
+        else:
+            new_state = 'hl.dsp.dpms({ action = "off" })'
+        try:
+            self._run_command(["hyprctl", "dispatch", new_state])
+        except Exception as err:
+            logger.error("Error controlling Hyprland screen: %s", err)
+
+    def _get_wayland_hyprland(self):
+        state = self._run_command(["hyprctl", "monitors", "all"])
+        value = re.search(r"dpmsStatus: [\d]", state)
+        if value:
+            if "1" in str(value):
+                return "ON"
+            else:
+                return "OFF"
+        else:
+            logger.error("Error getting dpms state: %s", state)
