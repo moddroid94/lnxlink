@@ -38,7 +38,7 @@ class Addon:
             )
             self.control_screen = self._control_wayland_gnome
             self.get_screen_status = self._get_wayland_gnome_status
-        elif  ["unknown", "wayland"] in session_type and "hyprland" in desktop_env:
+        elif session_type in ["unknown", "wayland"] and "hyprland" in desktop_env:
             self.control_screen = self._control_wayland_hyprland
             self.get_screen_status = self._get_wayland_hyprland
         else:
