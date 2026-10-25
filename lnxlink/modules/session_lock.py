@@ -1,8 +1,12 @@
 """Track and control the session lock state"""
+
 import logging
 import os
+import subprocess
 from shutil import which
 from typing import Any, Dict, Optional, Tuple
+
+import caelestia
 
 from lnxlink.modules.scripts.helpers import syscommand
 
@@ -17,12 +21,17 @@ class Addon:
         self.name = "Session Lock"
         self.lnxlink = lnxlink
         if which("loginctl") is None:
-            raise RuntimeError(
-                "loginctl not found, session lock state is not supported"
-            )
+            raise RuntimeError("loginctl not found, session lock state is not supported")
         # Resolve the session once, at startup, instead of on every read/lock/unlock.
         self.user = os.environ.get("USER") or os.environ.get("LOGNAME")
         self.session_id = self._detect_session_id()
+        self.desktop_env = os.environ.get("XDG_CURRENT_DESKTOP", "unknown").lower()
+
+    def _run_command(self, argv: list[str]) -> str:
+        try:
+            return subprocess.run(argv, capture_output=True, text=True).stdout
+        except (OSError, subprocess.SubprocessError) as err:
+            logger.error("command failed: %s (%s)", " ".join(argv), err)
 
     def exposed_controls(self) -> Dict[str, Dict[str, Any]]:
         """Exposes to home assistant"""
@@ -71,9 +80,7 @@ class Addon:
         if env_session:
             return env_session
 
-        stdout, _, _ = syscommand(
-            "loginctl list-sessions --no-legend", ignore_errors=True
-        )
+        stdout, _, _ = syscommand("loginctl list-sessions --no-legend", ignore_errors=True)
         for line in stdout.splitlines():
             parts = line.split()
             if len(parts) >= 3 and self.user and parts[2] == self.user:
@@ -83,6 +90,10 @@ class Addon:
     def _read_lock_state(self) -> Tuple[Optional[bool], str]:
         if not self.session_id:
             return None, ""
+        if "hyprland" in self.desktop_env:
+            command = ["qs", "-c", "caelestia", "ipc", "call", "lock", "isLocked"]
+            value = self._run_command(command)
+            return self._parse_bool(value.strip()), value
         stdout, _, _ = syscommand(
             f"loginctl show-session {self.session_id} -p LockedHint",
             ignore_errors=True,
@@ -91,16 +102,17 @@ class Addon:
         return self._parse_bool(value), stdout
 
     def _lock(self):
-        command = "loginctl lock-session"
-        if self.session_id:
-            command = f"{command} {self.session_id}"
-        syscommand(command, ignore_errors=True)
+        command = ["loginctl", "lock-session"]
+        if self.session_id and "hyprland" not in self.desktop_env:
+            # passing session to loginctl does not work, just use bare command
+            command.append(self.session_id)
+        self._run_command(command)
 
     def _unlock(self):
-        command = "loginctl unlock-session"
-        if self.session_id:
-            command = f"{command} {self.session_id}"
-        syscommand(command, ignore_errors=True)
+        command = ["loginctl", "unlock-session"]
+        if self.session_id and "hyprland" not in self.desktop_env:
+            command.append(self.session_id)
+        self._run_command(command)
 
     @staticmethod
     def _parse_bool(value) -> Optional[bool]:
